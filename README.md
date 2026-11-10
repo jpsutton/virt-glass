@@ -48,6 +48,16 @@ Snapshots) on the right.
 
 ## Install
 
+### Arch Linux (pacman repository)
+
+Releases are published in the signed [jpsutton pacman repository](https://github.com/jpsutton/arch-repo); see its README for setup, then:
+
+```sh
+sudo pacman -S virt-glass
+```
+
+### From source
+
 Requirements (Arch package names): `libvirt-python`, `python-gobject`,
 `spice-gtk` (for audio), `gst-plugins-good`, a C compiler and `make`.
 
@@ -109,6 +119,15 @@ a newer Looking Glass checkout and run `make -C native`.
 `tools/snapshot.py` launches the window, runs scripted steps and saves
 grabs; handy for testing in a headless compositor
 (`kwin_wayland --virtual --socket test`).
+
+## Development and releases
+
+Changes go feature branch → pull request into `staging` (the default branch) → pull request from `staging` into `release`.
+
+- Pull requests into `staging` and `release` run `checks.yml` (shell, Python, desktop entry and PKGBUILD checks; native shim compile).
+- Pull requests into `release` also run `build.yml`, which builds the Arch package.
+- Merge `staging` into `release` with **Create a merge commit**. `release.yml` then takes that pull request's package without rebuilding, signs it with the release key (`VIRT_GLASS_GPG_KEY`), tags `v<pkgver>` and creates the GitHub Release. Bump `pkgver` in `packaging/arch/PKGBUILD` for each release.
+- The release then starts the publish workflow of `jpsutton/arch-repo`, which verifies the package against `packaging/virt-glass-signing-key.asc`, re-signs it with the repository key and publishes it. That step needs the `ARCH_REPO_DISPATCH_TOKEN` secret.
 
 ## Limitations / ideas
 

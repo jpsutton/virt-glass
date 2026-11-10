@@ -8,6 +8,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Looking Glass client with built-in libvirt VM management"
 arch=('x86_64')
+url="https://github.com/jpsutton/virt-glass"
 license=('GPL-2.0-or-later')
 depends=(
   'python'
@@ -23,6 +24,7 @@ depends=(
 )
 makedepends=('gcc' 'make')
 optdepends=('qemu-guest-agent: guest tools inside the VM (install in the guest)')
+options=(!debug)
 source=()
 
 _tree="$startdir/../.."
