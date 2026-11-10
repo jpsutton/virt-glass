@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Virt Glass
+GenericName=Looking Glass VM Client
+Comment=Looking Glass client with libvirt VM controls
+Exec=@PREFIX@/virt-glass
+Icon=video-display
+Terminal=false
+Categories=System;Emulator;
+Keywords=looking glass;vm;libvirt;kvm;qemu;virtual machine;
+StartupWMClass=virt-glass

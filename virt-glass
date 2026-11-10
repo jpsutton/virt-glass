@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Launch Virt Glass from the source tree, building the native shim if needed.
+set -e
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+if [ ! -f "$here/virtglass/native/libvglass.so" ] || \
+   [ -n "$(find "$here/native" -name '*.c' -newer "$here/virtglass/native/libvglass.so" -print -quit)" ]; then
+  make -s -C "$here/native" -j"$(nproc)"
+fi
+py="$here/.venv/bin/python"
+[ -x "$py" ] || py=python3
+cd "$here"
+exec "$py" -m virtglass "$@"

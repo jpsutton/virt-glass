@@ -1,0 +1,69 @@
+# Maintainer: Jared Sutton <jpsutton@protonmail.com>
+#
+# Builds from the working tree this PKGBUILD lives in:
+#   cd packaging/arch && makepkg -si
+
+pkgname=virt-glass
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Looking Glass client with built-in libvirt VM management"
+arch=('x86_64')
+license=('GPL-2.0-or-later')
+depends=(
+  'python'
+  'pyside6'
+  'python-opengl'
+  'libvirt-python'
+  'python-gobject'
+  'spice-gtk'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'hwdata'
+  'glibc'
+)
+makedepends=('gcc' 'make')
+optdepends=('qemu-guest-agent: guest tools inside the VM (install in the guest)')
+source=()
+
+_tree="$startdir/../.."
+
+prepare() {
+  rm -rf "$pkgname"
+  mkdir "$pkgname"
+  cp -a "$_tree"/{native,virtglass,virt-glass.desktop,README.md} "$pkgname/"
+  cd "$pkgname"
+  rm -rf native/build virtglass/native/libvglass.so
+  find . -name __pycache__ -prune -exec rm -rf {} +
+}
+
+build() {
+  cd "$pkgname"
+  make -C native -j"$(nproc)"
+}
+
+package() {
+  cd "$pkgname"
+  local site
+  site="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+
+  install -d "$pkgdir$site"
+  cp -r virtglass "$pkgdir$site/"
+  python -m compileall -q -d "$site" "$pkgdir$site/virtglass"
+  python -O -m compileall -q -d "$site" "$pkgdir$site/virtglass"
+
+  install -d "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/virt-glass" <<'EOF'
+#!/bin/sh
+exec /usr/bin/python3 -m virtglass "$@"
+EOF
+  chmod 755 "$pkgdir/usr/bin/virt-glass"
+
+  sed 's|@PREFIX@/virt-glass|virt-glass|' virt-glass.desktop |
+    install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/virt-glass.desktop"
+
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 native/third_party/lg/LICENSE \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE.looking-glass"
+  install -Dm644 native/third_party/lg/repos/LGMP/LICENSE \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE.lgmp"
+}
