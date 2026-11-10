@@ -1,0 +1,63 @@
+# Checks on every pull request (into staging and into release): static checks and
+# a compile of the native shim. No packages; build.yml does those for release PRs.
+name: checks
+
+on:
+  pull_request:
+    branches: [staging, release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # release only takes what staging has: changes go feature branch -> staging
+  # -> release.
+  source-branch:
+    if: github.event_name == 'pull_request' && github.base_ref == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull requests into release must come from staging
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$HEAD_REF" != staging ] || [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::release takes pull requests from staging only (this one is from $HEAD_REPO:$HEAD_REF)"
+            exit 1
+          fi
+
+  static:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git shellcheck desktop-file-utils ruff python
+
+      - uses: actions/checkout@v4
+
+      - name: scripts/ci/check.sh
+        run: |
+          git config --global --add safe.directory "*"
+          useradd -m builder
+          chown -R builder: "$GITHUB_WORKSPACE"
+          su builder -c 'git config --global --add safe.directory "*" && scripts/ci/check.sh'
+
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
+  # The shim compiles the vendored Looking Glass sources; Arch's current gcc is
+  # what the package build uses.
+  native:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build libvglass.so
+        run: make -C native -j"$(nproc)"
