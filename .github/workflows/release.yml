@@ -1,0 +1,106 @@
+# Publish on merge into release, without rebuilding: the pull request from
+# staging already ran the build (build.yml), so this takes that run's artifact,
+# signs it (VIRT_GLASS_GPG_KEY), tags the release v<version> (pkgver in
+# packaging/arch/PKGBUILD) and creates a GitHub Release with the package, its
+# signature and SHA256SUMS. The jpsutton pacman repository (jpsutton/arch-repo)
+# then republishes the Arch package.
+#
+# Merge staging -> release pull requests with "Create a merge commit": the PR's
+# head is then the merge commit's second parent, which is what this looks up.
+name: release
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: write   # tag and release
+  actions: read     # read the pull request's build run and its artifacts
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find the pull request's build
+        id: build
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD^2 2>/dev/null) || {
+            echo "::error::$GITHUB_SHA is not a merge commit; merge staging into release with 'Create a merge commit'"
+            exit 1
+          }
+          # The published artifact was built from the PR head; it matches
+          # release only if the merge changed nothing on top of it.
+          if ! git diff --quiet "$head" HEAD; then
+            echo "::error::release differs from the merged staging head $head; its build would not match"
+            exit 1
+          fi
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow build.yml --commit "$head" \
+                  --status completed --json databaseId,event \
+                  -q 'map(select(.event == "pull_request")) | .[0].databaseId')
+          [ -n "$run" ] || { echo "::error::no completed pull-request build for $head"; exit 1; }
+          conclusion=$(gh run view "$run" -R "$GITHUB_REPOSITORY" --json jobs \
+                         -q '.jobs[] | select(.name == "arch") | .conclusion')
+          [ "$conclusion" = success ] || { echo "::error::build $run: arch is '$conclusion'"; exit 1; }
+          version=$(scripts/ci/version.sh)
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released; bump pkgver in packaging/arch/PKGBUILD"
+            exit 1
+          fi
+          {
+            echo "run=$run"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          echo "Build run $run for $head, releasing v$version" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download its artifact
+        run: |
+          set -euo pipefail
+          gh run download "${{ steps.build.outputs.run }}" -R "$GITHUB_REPOSITORY" -n virt-glass-arch -D dist
+          ls -la dist
+
+      - name: Sign (archlinux container)
+        env:
+          VIRT_GLASS_GPG_KEY: ${{ secrets.VIRT_GLASS_GPG_KEY }}
+        run: |
+          [ -n "$VIRT_GLASS_GPG_KEY" ] || { echo "::error::VIRT_GLASS_GPG_KEY is not set"; exit 1; }
+          docker run --rm -e VIRT_GLASS_GPG_KEY \
+            -v "$GITHUB_WORKSPACE:/src" -w /src archlinux:latest \
+            scripts/ci/sign-release.sh dist
+          sudo chown -R "$(id -u):$(id -g)" dist
+
+      - name: Tag
+        run: |
+          set -euo pipefail
+          git tag "v${{ steps.build.outputs.version }}" "$GITHUB_SHA"
+          git push origin "v${{ steps.build.outputs.version }}"
+
+      - name: GitHub Release
+        run: |
+          set -euo pipefail
+          gh release create "v${{ steps.build.outputs.version }}" -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Virt Glass ${{ steps.build.outputs.version }}" \
+            --generate-notes dist/*
+
+      # Start jpsutton/arch-repo's publish workflow so the pacman repository updates.
+      # Needs a fine-grained token with Actions: write on that repository.
+      - name: Update the pacman repository
+        env:
+          ARCH_REPO_DISPATCH_TOKEN: ${{ secrets.ARCH_REPO_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$ARCH_REPO_DISPATCH_TOKEN" ]; then
+            echo "::warning::ARCH_REPO_DISPATCH_TOKEN is not set; jpsutton/arch-repo was not updated"
+            exit 0
+          fi
+          GH_TOKEN=$ARCH_REPO_DISPATCH_TOKEN gh workflow run publish.yml -R jpsutton/arch-repo \
+            || echo "::warning::could not notify jpsutton/arch-repo; the pacman repository was not updated"
