@@ -1,12 +1,31 @@
 """Two-way clipboard sync (text and images) over the Looking Glass
 clipboard channel."""
 
+import hashlib
+
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData, QObject, Signal
 from PySide6.QtGui import QGuiApplication, QImage
 
 from . import lgclient as lg
 
 IMAGE_TYPES = (lg.CLIP_PNG, lg.CLIP_BMP, lg.CLIP_JPEG, lg.CLIP_TIFF)
+
+
+def _fingerprint(md):
+    """Identify clipboard contents so echoes of what we just synced, and
+    repeated change notifications for unchanged contents, can be ignored.
+    Empty text counts as nothing."""
+    if md is None:
+        return None
+    if md.hasImage():
+        img = QImage(md.imageData())
+        if not img.isNull():
+            digest = hashlib.blake2b(bytes(img.constBits()),
+                                     digest_size=8).digest()
+            return ("image", img.width(), img.height(), digest)
+    if md.hasText() and md.text():
+        return ("text", md.text())
+    return None
 
 
 class ClipboardBridge(QObject):
@@ -22,7 +41,7 @@ class ClipboardBridge(QObject):
         self._guest_serial = None
         self._request_serial = None
         self._data_serial = None
-        self._suppress = 0
+        self._last_fp = None            # contents last synced either way
         self._available = False
         self.cb.dataChanged.connect(self._host_changed)
         session.clipboardEvent.connect(self._guest_event)
@@ -33,13 +52,16 @@ class ClipboardBridge(QObject):
         self.enabled = on
         if on:
             self._host_changed()
-        elif self.session.is_connected and self._available:
-            self.client.clip_notify([])  # withdraw our offer
+        else:
+            self._last_fp = None
+            if self.session.is_connected and self._available:
+                self.client.clip_notify([])  # withdraw our offer
 
     def _reset(self):
         self._guest_serial = None
         self._request_serial = None
         self._data_serial = None
+        self._last_fp = None
         self._set_available(False)
 
     def _set_available(self, avail):
@@ -55,17 +77,21 @@ class ClipboardBridge(QObject):
 
     # host -> guest ------------------------------------------------------------
     def _host_changed(self):
-        if self._suppress:
-            self._suppress -= 1
-            return
         if not (self.enabled and self.session.is_connected and self._available):
             return
         md = self.cb.mimeData()
+        # Some desktops (e.g. Klipper on Wayland) re-assert the clipboard after
+        # every change, so this fires for contents we already synced. Announcing
+        # those again makes the guest and host echo each other.
+        fp = _fingerprint(md)
+        if fp == self._last_fp:
+            return
+        self._last_fp = fp
         types = []
         if md is not None:
             if md.hasImage():
                 types.append(lg.CLIP_PNG)
-            if md.hasText():
+            if md.hasText() and md.text():
                 types.append(lg.CLIP_TEXT)
         self.client.clip_notify(types)
 
@@ -73,7 +99,7 @@ class ClipboardBridge(QObject):
         md = self.cb.mimeData()
         if md is None:
             return None
-        if type_ == lg.CLIP_TEXT and md.hasText():
+        if type_ == lg.CLIP_TEXT and md.hasText() and md.text():
             return md.text().encode("utf-8")
         if type_ in IMAGE_TYPES and md.hasImage():
             img = QImage(md.imageData())
@@ -128,6 +154,8 @@ class ClipboardBridge(QObject):
         md = QMimeData()
         if type_ == lg.CLIP_TEXT:
             text = data.decode("utf-8", errors="replace").rstrip("\0")
+            if not text:
+                return  # never replace the host clipboard with a blank entry
             md.setText(text)
             desc = f"{len(text)} characters"
         elif type_ in IMAGE_TYPES:
@@ -138,6 +166,9 @@ class ClipboardBridge(QObject):
             desc = f"{img.width()}x{img.height()} image"
         else:
             return
-        self._suppress += 1
+        fp = _fingerprint(md)
+        if fp == _fingerprint(self.cb.mimeData()):
+            return  # host already has these contents
+        self._last_fp = fp
         self.cb.setMimeData(md)
         self.activity.emit(f"Copied {desc} from guest")
