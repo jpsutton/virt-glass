@@ -4,6 +4,7 @@ and the QEMU guest agent."""
 import base64
 import json
 import os
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -101,6 +102,10 @@ class DomainDetails:
 # --------------------------------------------------------------------------
 # XML helpers
 
+_JSON_MEM_PATH = re.compile(r"""["']mem-path["']\s*:\s*["']([^"']+)["']""")
+_JSON_SIZE = re.compile(r"""["']size["']\s*:\s*(\d+)""")
+
+
 def lg_shm_path(xml):
     """Find the Looking Glass shared memory path from a domain's XML."""
     root = ET.fromstring(xml)
@@ -116,6 +121,12 @@ def lg_shm_path(xml):
             for part in value.split(","):
                 if part.startswith("mem-path="):
                     return part.split("=", 1)[1], None
+        # JSON form: -object {"qom-type":"memory-backend-file","mem-path":...}
+        # QEMU also accepts single quotes, so match either quote style.
+        m = _JSON_MEM_PATH.search(value)
+        if m:
+            size = _JSON_SIZE.search(value)
+            return m.group(1), f"{size.group(1)} B" if size else None
     for arg in root.findall(".//qemu:override//qemu:property", ns):
         if arg.get("name") == "mem-path":
             return arg.get("value"), None
