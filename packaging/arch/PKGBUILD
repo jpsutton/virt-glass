@@ -4,7 +4,7 @@
 #   cd packaging/arch && makepkg -si
 
 pkgname=virt-glass
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Looking Glass client with built-in libvirt VM management"
 arch=('x86_64')
