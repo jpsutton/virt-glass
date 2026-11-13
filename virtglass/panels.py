@@ -69,7 +69,14 @@ class OverviewPanel(PanelBase):
         lay.addLayout(row)
         self.lg_info = None
         self._agent = {}
+        self._agent_busy = False
+        self._has_channel = False
         self.agentInfo.connect(self._got_agent)
+        # The agent is down while a guest boots or reboots, so a single ping
+        # can leave "not responding" on screen. Keep retrying until it answers.
+        self._agent_retry = QTimer(self, interval=5000,
+                                   timeout=self._retry_agent)
+        self._agent_retry.start()
 
     def set_lg_info(self, info):
         self.lg_info = info
@@ -78,22 +85,37 @@ class OverviewPanel(PanelBase):
     def refresh(self):
         self._agent = {}
         self._render()
+        self._fetch_agent()
+
+    def _fetch_agent(self):
+        if self._agent_busy:
+            return
         dom = self.dom()
         if dom is None or not dom.isActive():
             return
         name = self.domain
+        self._agent_busy = True
 
         def fetch():
-            ga = vmlib.GuestAgent(dom)
-            if ga.ping():
-                info = ga.summary()
-                info["_domain"] = name
-                self.agentInfo.emit(info)
-            else:
-                self.agentInfo.emit({"_domain": name, "_unavailable": True})
+            try:
+                ga = vmlib.GuestAgent(dom)
+                if ga.ping():
+                    info = ga.summary()
+                    info["_domain"] = name
+                else:
+                    info = {"_domain": name, "_unavailable": True}
+            except Exception:
+                info = {"_domain": name, "_unavailable": True}
+            self.agentInfo.emit(info)
         self.manager.pool.submit(fetch)
 
+    def _retry_agent(self):
+        if (self.isVisible() and self._has_channel
+                and self._agent.get("_unavailable")):
+            self._fetch_agent()
+
     def _got_agent(self, info):
+        self._agent_busy = False
         if info.get("_domain") == self.domain:
             self._agent = info
             self._render()
@@ -109,6 +131,7 @@ class OverviewPanel(PanelBase):
         except libvirt.libvirtError as e:
             self.view.setHtml(f"<p>{html.escape(str(e))}</p>")
             return
+        self._has_channel = d.has_agent_channel
         e = html.escape
         rows = []
 
